@@ -60,6 +60,7 @@ export const launchDongleServer = (
 
     const next = spawn(binaryPath, args);
     child = next;
+    onLog?.(`dongle-server spawned pid=${next.pid}`);
 
     next.stdout?.setEncoding("utf8");
     next.stderr?.setEncoding("utf8");
@@ -87,6 +88,9 @@ export const launchDongleServer = (
   return {
     kill: () => {
       killed = true;
+      onLog?.(
+        `dongle-server kill requested pid=${child?.pid ?? "none"} exitCode=${child?.exitCode ?? "null"}`,
+      );
       child?.kill();
       child = null;
     },
