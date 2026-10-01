@@ -1,17 +1,24 @@
 import net from "node:net";
 import { createFrameParser, encodeCommand } from "../protocol/jsonl.ts";
+import { DEFAULT_LAB_OPTIONS } from "../protocol/types.ts";
 import type {
   AnyResponse,
   APISpectroJSON,
+  CalibrationResultPayload,
+  CalibrationScans,
+  ColorScan,
   Command,
   CommandType,
   ConfigurationPayload,
+  DeviceType,
   DiscoveredPeripheral,
   DongleErrorCode,
   DongleStatus,
   EventName,
+  LabOptions,
   LicenseInstalled,
   LicensePayload,
+  VerifyResult,
 } from "../protocol/types.ts";
 
 /** A response the server answered with an `error_code`. */
@@ -22,6 +29,17 @@ export class DongleCommandError extends Error {
     super(`${command} failed: ${code}`);
     this.name = "DongleCommandError";
     this.code = code;
+  }
+}
+
+/** A scan asked for before the device's 5-second recovery window elapsed. */
+export class ScanThrottleError extends Error {
+  readonly retryInMs: number;
+
+  constructor(retryInMs: number) {
+    super(`Scan requested too soon; retry in ${retryInMs}ms`);
+    this.name = "ScanThrottleError";
+    this.retryInMs = retryInMs;
   }
 }
 
@@ -330,5 +348,131 @@ export class DongleClient {
       ["DeviceDisconnected", "Disconnect"],
       timeoutMs,
     );
+  }
+
+  async scan(
+    serial: string,
+    timeoutMs = this.defaultTimeoutMs,
+    lab: LabOptions = DEFAULT_LAB_OPTIONS,
+  ): Promise<ColorScan> {
+    const cooldown = this.scanCooldownMs();
+    if (cooldown > 0) throw new ScanThrottleError(cooldown);
+
+    this.lastScanAt = Date.now();
+    return this.request<{ serial: string; lab: LabOptions }, ColorScan>(
+      { command: "Scan", parameters: { serial, lab } },
+      "Scan",
+      timeoutMs,
+    );
+  }
+
+  async multiModeScan(
+    serial: string,
+    timeoutMs = this.defaultTimeoutMs,
+    lab: LabOptions = DEFAULT_LAB_OPTIONS,
+  ): Promise<ColorScan[]> {
+    const cooldown = this.scanCooldownMs();
+    if (cooldown > 0) throw new ScanThrottleError(cooldown);
+
+    this.lastScanAt = Date.now();
+    return this.request<{ serial: string; lab: LabOptions }, ColorScan[]>(
+      { command: "MultiModeScan", parameters: { serial, lab } },
+      "MultiModeScan",
+      timeoutMs,
+    );
+  }
+
+  /**
+   * Apply a calibration from scans the caller collected.
+   *
+   * The server does not drive the placements. Spectro 1 sends white, green and
+   * blue; Spectro 3 sends the shutter-closed cap scan as `white` plus
+   * `white_tile` and `blue`. Scans go out exactly as they came back from
+   * `scan()` - the server re-derives from `sense_values`, `gloss` and `uv`.
+   *
+   * Resolves only on `calibration_result: "success"`. A rejected calibration
+   * arrives as an `error_code` and surfaces here as a `DongleCommandError`
+   * (`vi-failed-white-tile-calibration`, `vi-failed-green-verification`,
+   * `vi-failed-blue-verification`, `vi-failed-white-tile-verification`).
+   */
+  setCalibration(
+    serial: string,
+    scans: CalibrationScans,
+    timeoutMs = this.defaultTimeoutMs,
+  ): Promise<CalibrationResultPayload> {
+    return this.request<
+      { serial: string; calibration_scans: CalibrationScans },
+      CalibrationResultPayload
+    >(
+      {
+        command: "SetCalibration",
+        parameters: { serial, calibration_scans: scans },
+      },
+      "SetCalibration",
+      timeoutMs,
+    );
+  }
+
+  /**
+   * Run the verification routine against scans of the reference tiles.
+   *
+   * Spectro 3 names its tile parameters differently from Spectro 1, so the
+   * device type picks the parameter spelling. Both answer under `Verify`, but
+   * the results come back under `white_tile`/`blue_tile` for Spectro 3.
+   */
+  verify(
+    serial: string,
+    deviceType: DeviceType,
+    white: ColorScan | null,
+    second: ColorScan | null,
+    third: ColorScan | null,
+    timeoutMs = this.defaultTimeoutMs,
+  ): Promise<VerifyResult> {
+    const parameters =
+      deviceType === "spectro 3"
+        ? {
+            serial,
+            white,
+            white_tile_verification: second,
+            blue_tile_verification: third,
+          }
+        : { serial, white, green: second, blue: third };
+
+    return this.request<typeof parameters, VerifyResult>(
+      { command: "Verify", parameters },
+      "Verify",
+      timeoutMs,
+    );
+  }
+
+  /**
+   * Start a Bluetooth sweep.
+   *
+   * The response only acknowledges the start; each instrument found arrives
+   * later as an unsolicited `DiscoveredPeripheral` carrying `is_licensed`
+   * (wire it with `onDiscoveredPeripheral`). Note that the dongle cannot
+   * connect while a sweep is running, which is why `Connect` stops discovery
+   * server-side.
+   */
+  startBluetoothDiscovery(timeoutMs = this.defaultTimeoutMs): Promise<unknown> {
+    return this.request<never, unknown>(
+      { command: "StartBluetoothDiscovery" },
+      "StartBluetoothDiscovery",
+      timeoutMs,
+    );
+  }
+
+  stopBluetoothDiscovery(timeoutMs = this.defaultTimeoutMs): Promise<unknown> {
+    return this.request<never, unknown>(
+      { command: "StopBluetoothDiscovery" },
+      "StopBluetoothDiscovery",
+      timeoutMs,
+    );
+  }
+
+  /** Ask the server to exit. Fire and forget - it answers by closing. */
+  shutdownServer(): void {
+    if (!this.socket) return;
+    this.socket.write(encodeCommand({ command: "Shutdown" }));
   }
 }
