@@ -20,7 +20,7 @@ needs the path to it.
 ## Install
 
 ```bash
-npm install github:variablecolor/bridge-sdk-js#v0.1.0
+npm install github:variablecolor/bridge-sdk-js#v0.2.0
 ```
 
 Node 20 or newer. Both ESM and CommonJS builds are published.
@@ -95,6 +95,23 @@ A command that fails rejects with a `DongleCommandError` whose `code` is the
 server's `error_code` — for example `vi-missing-license`,
 `vi-bluetooth-device-not-connected`, `vi-invalid-parameters`. There is no
 success boolean to inspect: a resolved promise means the command succeeded.
+
+When the server sends one of its richer failures it also includes a sentence
+explaining it, which lands on `.detail` and in `.message`:
+
+```js
+try {
+  await client.installLicense("/Volumes/BRIDGE/SP3-0001.kpag");
+} catch (error) {
+  error.code;   // "vi-invalid-parameters"
+  error.detail; // "invalid file path: stat /Volumes/...: no such file or directory"
+}
+```
+
+Failures that happen on the air rather than in the request arrive on a
+different event — a refused `Connect`, a pair that never completes, a link
+lost mid-scan — and the client surfaces all of them as the same rejection
+rather than waiting out your timeout.
 
 ### Pass scans around whole
 

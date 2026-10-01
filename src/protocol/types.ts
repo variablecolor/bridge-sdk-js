@@ -46,6 +46,10 @@ export type DongleErrorCode =
   | "vi-not-implemented"
   | "vi-gloss-internal-one"
   | "vi-insufficient-memory"
+  | "vi-connection-timed-out"
+  | "vi-connection-lost"
+  | "vi-characteristic-missing"
+  | "vi-service-discovery-failed"
   | (string & {});
 
 export interface Command<T> {

@@ -1,6 +1,6 @@
 {
   "name": "@variablecolor/bridge-sdk-js",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "description": "Dependency-free TypeScript client for the Bridge by Variable dongle server",
   "license": "MIT",
   "repository": "github:variablecolor/bridge-sdk-js",

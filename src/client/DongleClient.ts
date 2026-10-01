@@ -21,16 +21,56 @@ import type {
   VerifyResult,
 } from "../protocol/types.ts";
 
-/** A response the server answered with an `error_code`. */
+/**
+ * A response the server answered with an `error_code`.
+ *
+ * The server's richer failures put a `CategorizedError` in the payload -
+ * `{error_code, message, error_type, file}` - and the sentence in `message` is
+ * usually the only thing that says what to do about it ("invalid file path:
+ * stat /Volumes/BRIDGE/X.kpag: no such file or directory"). It is kept on
+ * `detail` and folded into `message`, because a caller that sees only the code
+ * cannot tell a pulled USB drive from a corrupt licence.
+ */
 export class DongleCommandError extends Error {
   readonly code: DongleErrorCode;
 
-  constructor(code: DongleErrorCode, command: CommandType) {
-    super(`${command} failed: ${code}`);
+  /** The server's own explanation, when it sent one. */
+  readonly detail?: string;
+
+  constructor(code: DongleErrorCode, command: CommandType, detail?: string) {
+    super(
+      detail
+        ? `${command} failed: ${code}: ${detail}`
+        : `${command} failed: ${code}`,
+    );
     this.name = "DongleCommandError";
     this.code = code;
+    this.detail = detail;
   }
 }
+
+/**
+ * An awaited event that only counts when it carries an `error_code`.
+ *
+ * Some events are both an acknowledgement and a failure channel: every
+ * `Connect` attempt is acked under `Connect` whether or not it works, and a
+ * `DeviceDisconnected` is routine on teardown but is also how a failed pair or
+ * a dropped link reports itself. Awaiting such an event outright would settle
+ * on the ack; awaiting it error-only turns it into a fast failure path without
+ * stealing the success case.
+ */
+export interface ErrorOnlyEvent {
+  event: EventName;
+  errorOnly: true;
+}
+
+/** Await `event` only if it arrives carrying an error code. */
+export const onError = (event: EventName): ErrorOnlyEvent => ({
+  event,
+  errorOnly: true,
+});
+
+export type AwaitSpec = EventName | ErrorOnlyEvent;
 
 /** A scan asked for before the device's 5-second recovery window elapsed. */
 export class ScanThrottleError extends Error {
@@ -63,6 +103,8 @@ interface Pending {
   resolve: (payload: unknown) => void;
   reject: (error: Error) => void;
   timer: NodeJS.Timeout;
+  /** Of this entry's keys, the ones that only settle on an error. */
+  errorOnly: Set<EventName>;
 }
 
 export const DEFAULT_PORT = 9100;
@@ -198,9 +240,16 @@ export class DongleClient {
     const entry = this.pending.get(event);
     if (!entry) return;
 
+    // An error-only key ignores the success case: a bare Connect ack means
+    // the attempt started, not that the device is on the air.
+    if (!errorCode && entry.errorOnly.has(event)) return;
+
     // entry.resolve/reject clear the timer and every key this entry holds.
     if (errorCode) {
-      entry.reject(new DongleCommandError(errorCode, entry.command));
+      const detail = (frame.payload as { message?: string } | null)?.message;
+      entry.reject(
+        new DongleCommandError(errorCode, entry.command, detail),
+      );
       return;
     }
     entry.resolve(frame.payload);
@@ -217,10 +266,18 @@ export class DongleClient {
    */
   protected request<TParams, TPayload>(
     command: Command<TParams>,
-    awaitEvents: EventName | EventName[],
+    awaitEvents: AwaitSpec | AwaitSpec[],
     timeoutMs: number,
   ): Promise<TPayload> {
-    const events = Array.isArray(awaitEvents) ? awaitEvents : [awaitEvents];
+    const specs = Array.isArray(awaitEvents) ? awaitEvents : [awaitEvents];
+    const events = specs.map((spec) =>
+      typeof spec === "string" ? spec : spec.event,
+    );
+    const errorOnly = new Set(
+      specs
+        .filter((spec): spec is ErrorOnlyEvent => typeof spec !== "string")
+        .map((spec) => spec.event),
+    );
 
     if (!this.isConnected() || !this.socket) {
       return Promise.reject(
@@ -246,6 +303,7 @@ export class DongleClient {
 
       const entry: Pending = {
         command: command.command,
+        errorOnly,
         resolve: (payload) => {
           clear();
           (resolve as (value: unknown) => void)(payload);
@@ -326,7 +384,15 @@ export class DongleClient {
   ): Promise<APISpectroJSON> {
     return this.request<{ serial: string }, APISpectroJSON>(
       { command: "Connect", parameters: { serial } },
-      "DeviceConnected",
+      [
+        "DeviceConnected",
+        // A refused Connect answers under Connect with a code; a pair that
+        // never completes reports vi-connection-timed-out under
+        // DeviceDisconnected. Without both, either one waits out the timeout
+        // and loses the code that says why.
+        onError("Connect"),
+        onError("DeviceDisconnected"),
+      ],
       timeoutMs,
     );
   }
@@ -361,7 +427,7 @@ export class DongleClient {
     this.lastScanAt = Date.now();
     return this.request<{ serial: string; lab: LabOptions }, ColorScan>(
       { command: "Scan", parameters: { serial, lab } },
-      "Scan",
+      ["Scan", onError("DeviceDisconnected")],
       timeoutMs,
     );
   }
@@ -377,7 +443,7 @@ export class DongleClient {
     this.lastScanAt = Date.now();
     return this.request<{ serial: string; lab: LabOptions }, ColorScan[]>(
       { command: "MultiModeScan", parameters: { serial, lab } },
-      "MultiModeScan",
+      ["MultiModeScan", onError("DeviceDisconnected")],
       timeoutMs,
     );
   }
@@ -408,7 +474,7 @@ export class DongleClient {
         command: "SetCalibration",
         parameters: { serial, calibration_scans: scans },
       },
-      "SetCalibration",
+      ["SetCalibration", onError("DeviceDisconnected")],
       timeoutMs,
     );
   }
@@ -440,7 +506,7 @@ export class DongleClient {
 
     return this.request<typeof parameters, VerifyResult>(
       { command: "Verify", parameters },
-      "Verify",
+      ["Verify", onError("DeviceDisconnected")],
       timeoutMs,
     );
   }

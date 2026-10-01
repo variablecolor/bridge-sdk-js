@@ -124,3 +124,152 @@ test("disconnectSpectro resolves on DeviceDisconnected", async () => {
   client.close();
   await server.close();
 });
+
+test("an error payload's message reaches the caller", async () => {
+  // WithError on a CategorizedError puts {error_code, message, error_type,
+  // file} in the payload and the code in error_code. Reading only the code
+  // throws away the one sentence that says what to do - here, that the drive
+  // is gone.
+  const server = await startMockServer(() => [
+    {
+      event: "CopyLicense",
+      payload: {
+        error_code: "vi-invalid-parameters",
+        message:
+          "invalid file path: stat /Volumes/BRIDGE/SP3-0001.kpag: no such file or directory",
+        error_type: "file_error",
+        file: "/Volumes/BRIDGE/SP3-0001.kpag",
+      },
+      error_code: "vi-invalid-parameters",
+    },
+  ]);
+  const client = new DongleClient({ port: server.port });
+  await client.connect();
+
+  await assert.rejects(
+    () => client.installLicense("/Volumes/BRIDGE/SP3-0001.kpag"),
+    (error: unknown) =>
+      error instanceof DongleCommandError &&
+      error.code === "vi-invalid-parameters" &&
+      error.detail ===
+        "invalid file path: stat /Volumes/BRIDGE/SP3-0001.kpag: no such file or directory" &&
+      /invalid file path/.test(error.message),
+  );
+
+  client.close();
+  await server.close();
+});
+
+test("a plain error_code with no payload message still rejects cleanly", async () => {
+  const server = await startMockServer(() => [
+    { event: "CopyLicense", payload: {}, error_code: "vi-invalid-license" },
+  ]);
+  const client = new DongleClient({ port: server.port });
+  await client.connect();
+
+  await assert.rejects(
+    () => client.installLicense("/Volumes/BRIDGE/X.kpag"),
+    (error: unknown) =>
+      error instanceof DongleCommandError &&
+      error.code === "vi-invalid-license" &&
+      error.detail === undefined &&
+      error.message === "CopyLicense failed: vi-invalid-license",
+  );
+
+  client.close();
+  await server.close();
+});
+
+test("a Connect rejected by the server fails fast with its code", async () => {
+  // The server answers a refused Connect under event "Connect" with a code,
+  // while every accepted attempt also gets an errorless "Connect" ack. Only
+  // the errored one may settle the promise.
+  const server = await startMockServer(() => [
+    { event: "Connect", payload: { serial: "SP1-0007" } },
+    {
+      event: "Connect",
+      payload: { serial: "SP1-0007" },
+      error_code: "vi-missing-license",
+    },
+  ]);
+  const client = new DongleClient({ port: server.port });
+  await client.connect();
+
+  await assert.rejects(
+    () => client.connectSpectro("SP1-0007", 5000),
+    (error: unknown) =>
+      error instanceof DongleCommandError &&
+      error.code === "vi-missing-license",
+  );
+
+  client.close();
+  await server.close();
+});
+
+test("a Connect that times out on the air fails fast too", async () => {
+  // A BLE attempt that never pairs arrives as DeviceDisconnected carrying
+  // vi-connection-timed-out, not as a Connect failure.
+  const server = await startMockServer(() => [
+    { event: "Connect", payload: { serial: "SP1-0007" } },
+    {
+      event: "DeviceDisconnected",
+      payload: { serial: "SP1-0007", disconnect_code: "0202" },
+      error_code: "vi-connection-timed-out",
+    },
+  ]);
+  const client = new DongleClient({ port: server.port });
+  await client.connect();
+
+  await assert.rejects(
+    () => client.connectSpectro("SP1-0007", 5000),
+    (error: unknown) =>
+      error instanceof DongleCommandError &&
+      error.code === "vi-connection-timed-out",
+  );
+
+  client.close();
+  await server.close();
+});
+
+test("an errorless Connect ack does not settle connectSpectro", async () => {
+  // The ack means "attempt started", not "connected". Settling on it would
+  // report a connected device that is not connected.
+  const server = await startMockServer(() => [
+    { event: "Connect", payload: { serial: "SP1-0007" } },
+  ]);
+  const client = new DongleClient({ port: server.port });
+  await client.connect();
+
+  await assert.rejects(
+    () => client.connectSpectro("SP1-0007", 60),
+    /Connect timed out after 60ms/,
+  );
+
+  client.close();
+  await server.close();
+});
+
+test("a link lost mid-scan fails the scan instead of waiting out the timeout", async () => {
+  const server = await startMockServer((command) =>
+    command.command === "Scan"
+      ? [
+          {
+            event: "DeviceDisconnected",
+            payload: { serial: "SP3-0001" },
+            error_code: "vi-connection-lost",
+          },
+        ]
+      : [],
+  );
+  const client = new DongleClient({ port: server.port });
+  await client.connect();
+
+  await assert.rejects(
+    () => client.scan("SP3-0001", 30_000),
+    (error: unknown) =>
+      error instanceof DongleCommandError && error.code === "vi-connection-lost",
+  );
+
+  client.close();
+  await server.close();
+});
