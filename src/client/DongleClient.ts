@@ -10,6 +10,8 @@ import type {
   DongleErrorCode,
   DongleStatus,
   EventName,
+  LicenseInstalled,
+  LicensePayload,
 } from "../protocol/types.ts";
 
 /** A response the server answered with an `error_code`. */
@@ -258,6 +260,74 @@ export class DongleClient {
     return this.request<never, ConfigurationPayload>(
       { command: "GetConfiguration" },
       "GetConfiguration",
+      timeoutMs,
+    );
+  }
+
+  /**
+   * Install a `.kpag` into the server's license directory.
+   *
+   * The command carries no serial - the response reports which serial the file
+   * turned out to be for, so a caller that expected a particular unit must
+   * compare it. The path must be absolute; the server rejects anything else.
+   */
+  installLicense(
+    filePath: string,
+    overwrite = true,
+    timeoutMs = this.defaultTimeoutMs,
+  ): Promise<LicenseInstalled> {
+    return this.request<{ file: string; overwrite: boolean }, LicenseInstalled>(
+      { command: "CopyLicense", parameters: { file: filePath, overwrite } },
+      "CopyLicense",
+      timeoutMs,
+    );
+  }
+
+  deleteLicense(
+    serial: string,
+    timeoutMs = this.defaultTimeoutMs,
+  ): Promise<LicensePayload> {
+    return this.request<{ serial: string }, LicensePayload>(
+      { command: "DeleteLicense", parameters: { serial } },
+      "DeleteLicense",
+      timeoutMs,
+    );
+  }
+
+  /**
+   * Open a Bluetooth link to a licensed device.
+   *
+   * `Connect` is only an acknowledgement; the link is live at
+   * `DeviceConnected`, so that is the frame this waits for. A device the
+   * server already holds short-circuits - it re-labels its reply
+   * `DeviceConnected` - so both paths land here.
+   */
+  connectSpectro(
+    serial: string,
+    timeoutMs = this.defaultTimeoutMs,
+  ): Promise<APISpectroJSON> {
+    return this.request<{ serial: string }, APISpectroJSON>(
+      { command: "Connect", parameters: { serial } },
+      "DeviceConnected",
+      timeoutMs,
+    );
+  }
+
+  /**
+   * Close the Bluetooth link.
+   *
+   * The server writes nothing on success - the unsolicited
+   * `DeviceDisconnected` is the ack. It *does* answer on failure, under event
+   * `Disconnect` with an error code, so both names are awaited; otherwise a
+   * real failure would sit until the timeout.
+   */
+  async disconnectSpectro(
+    serial: string,
+    timeoutMs = this.defaultTimeoutMs,
+  ): Promise<void> {
+    await this.request<{ serial: string }, { serial: string }>(
+      { command: "Disconnect", parameters: { serial } },
+      ["DeviceDisconnected", "Disconnect"],
       timeoutMs,
     );
   }
