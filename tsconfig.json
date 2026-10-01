@@ -4,6 +4,10 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "strict": true,
+    // The CJS build resolves as Node10, where `node:net` has no default
+    // export; without this, `import net from "node:net"` fails TS1192 there
+    // and every net callback degrades to an implicit any.
+    "esModuleInterop": true,
     "declaration": true,
     "sourceMap": true,
     "outDir": "dist/esm",
