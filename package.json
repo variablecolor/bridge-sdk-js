@@ -1,6 +1,6 @@
 {
   "name": "@variablecolor/bridge-sdk-js",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Dependency-free TypeScript client for the Bridge by Variable dongle server",
   "license": "MIT",
   "repository": "github:variablecolor/bridge-sdk-js",
@@ -20,8 +20,14 @@
       }
     }
   },
-  "files": ["dist", "README.md", "LICENSE"],
-  "engines": { "node": ">=20" },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.cjs.json && node scripts/fixup-cjs.mjs",
     "test": "node --test \"src/**/*.test.ts\"",
