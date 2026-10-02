@@ -541,4 +541,47 @@ export class DongleClient {
     if (!this.socket) return;
     this.socket.write(encodeCommand({ command: "Shutdown" }));
   }
+
+  /**
+   * Ask the server to exit and wait until it has.
+   *
+   * `Shutdown` is the one command with no response: the server disconnects
+   * whatever it is holding, exits, and the socket closing is the only
+   * acknowledgement. Prefer this over `shutdownServer()` when you need to
+   * know it actually happened - destroying your own end right after writing
+   * can drop the command before it is flushed, which looks like success and
+   * leaves the server running.
+   *
+   * Rejects if the server is still there when `timeoutMs` elapses.
+   */
+  requestShutdown(timeoutMs = this.defaultTimeoutMs): Promise<void> {
+    const socket = this.socket;
+    if (!this.isConnected() || !socket) {
+      return Promise.reject(
+        new Error(
+          `DongleClient is not connected to ${this.host}:${this.port}; call connect() first`,
+        ),
+      );
+    }
+
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        socket.off("close", onClose);
+        reject(
+          new Error(
+            `dongle server did not close the connection within ${timeoutMs}ms of Shutdown`,
+          ),
+        );
+      }, timeoutMs);
+
+      const onClose = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+
+      socket.once("close", onClose);
+      // Written, not ended: the server's own exit closes the socket.
+      socket.write(encodeCommand({ command: "Shutdown" }));
+    });
+  }
 }

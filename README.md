@@ -20,7 +20,7 @@ needs the path to it.
 ## Install
 
 ```bash
-npm install github:variablecolor/bridge-sdk-js#v0.2.0
+npm install github:variablecolor/bridge-sdk-js#v0.3.0
 ```
 
 Node 20 or newer. Both ESM and CommonJS builds are published.
@@ -83,7 +83,8 @@ arrives, and takes an optional per-call timeout in milliseconds.
 | `setCalibration(serial, scans)` | `SetCalibration` | `calibration_result: "success"` |
 | `verify(serial, deviceType, white, second, third)` | `Verify` | `Verify` — per-tile `de` and `is_within_tolerance` |
 | `startBluetoothDiscovery()` / `stopBluetoothDiscovery()` | discovery | the acknowledgement |
-| `shutdownServer()` | `Shutdown` | nothing — the server answers by closing |
+| `shutdownServer()` | `Shutdown` | nothing — fire and forget |
+| `requestShutdown()` | `Shutdown` | the socket closing, which is the server's only acknowledgement |
 
 Unsolicited events are callbacks on the constructor options, not promises:
 `onButtonPress`, `onDongleStatus`, `onDeviceConnected`, `onDeviceDisconnected`,

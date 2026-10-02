@@ -273,3 +273,44 @@ test("a link lost mid-scan fails the scan instead of waiting out the timeout", a
   client.close();
   await server.close();
 });
+
+test("requestShutdown resolves when the server closes the socket", async () => {
+  // Shutdown has no response: the server disconnects its devices, exits, and
+  // the socket closing is the only acknowledgement. Destroying our end right
+  // after writing could drop the command before it is flushed.
+  const server = await startMockServer((command, handle) => {
+    if (command.command === "Shutdown") {
+      setTimeout(() => void handle.dropClient(), 10);
+    }
+    return [];
+  });
+  const client = new DongleClient({ port: server.port });
+  await client.connect();
+
+  await client.requestShutdown(2000);
+
+  assert.deepEqual(server.received, [{ command: "Shutdown" }]);
+  assert.equal(client.isConnected(), false);
+  await server.close();
+});
+
+test("requestShutdown rejects when the server ignores it", async () => {
+  // A server that stays up is a finding, not something to report as done.
+  const server = await startMockServer(() => []);
+  const client = new DongleClient({ port: server.port });
+  await client.connect();
+
+  await assert.rejects(
+    () => client.requestShutdown(80),
+    /did not close the connection/i,
+  );
+
+  client.close();
+  await server.close();
+});
+
+test("requestShutdown on a closed client rejects rather than pretending", async () => {
+  const client = new DongleClient({ port: 9 });
+
+  await assert.rejects(() => client.requestShutdown(100), /not connected/i);
+});
