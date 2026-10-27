@@ -5,7 +5,7 @@ export interface MockServerHandle {
   port: number;
   /** Every command line the server received, parsed. */
   received: Array<Record<string, unknown>>;
-  /** Push a frame to the connected client. */
+  /** Push a frame to the connected client, once the server has accepted it. */
   send: (frame: AnyResponse) => void;
   /**
    * Drop the client socket without closing the server.
@@ -71,7 +71,10 @@ export const startMockServer = async (
   const handle: MockServerHandle = {
     port: address.port,
     received,
-    send: (frame) => client?.write(`${JSON.stringify(frame)}\n`),
+    // Waits for the accept callback for the same reason dropClient does.
+    // Frames still go out in call order: the .then callbacks run FIFO.
+    send: (frame) =>
+      void connected.then(() => client?.write(`${JSON.stringify(frame)}\n`)),
     dropClient: async () => {
       await connected;
       client?.destroy();
