@@ -20,7 +20,7 @@ needs the path to it.
 ## Install
 
 ```bash
-npm install github:variablecolor/bridge-sdk-js#v0.3.0
+npm install github:variablecolor/bridge-sdk-js#v0.4.0
 ```
 
 Node 20 or newer. Both ESM and CommonJS builds are published.
@@ -76,9 +76,10 @@ arrives, and takes an optional per-call timeout in milliseconds.
 | `getConfiguration()` | `GetConfiguration` | `GetConfiguration` — licensed serials and their device types |
 | `installLicense(path, overwrite?)` | `CopyLicense` | `CopyLicense` — reports which serial the file was for |
 | `deleteLicense(serial)` | `DeleteLicense` | `DeleteLicense` |
+| `deleteAllLicenses()` | `DeleteLicense` with `delete_all` | `DeleteLicense` — every license is removed |
 | `connectSpectro(serial)` | `Connect` | `DeviceConnected` — not the `Connect` ack |
 | `disconnectSpectro(serial)` | `Disconnect` | `DeviceDisconnected`, or rejects on an errored `Disconnect` |
-| `scan(serial)` | `Scan` | `Scan` — one reading |
+| `scan(serial, timeout?, lab?, options?)` | `Scan` | `Scan` — one reading |
 | `multiModeScan(serial)` | `MultiModeScan` | `MultiModeScan` — one reading per measurement mode |
 | `setCalibration(serial, scans)` | `SetCalibration` | `calibration_result: "success"` |
 | `verify(serial, deviceType, white, second, third)` | `Verify` | `Verify` — per-tile `de` and `is_within_tolerance` |
@@ -88,7 +89,7 @@ arrives, and takes an optional per-call timeout in milliseconds.
 
 Unsolicited events are callbacks on the constructor options, not promises:
 `onButtonPress`, `onDongleStatus`, `onDeviceConnected`, `onDeviceDisconnected`,
-`onDiscoveredPeripheral`, `onError`, `onClose`, `onLog`.
+`onDiscoveredPeripheral`, `onError`, `onClose`, `onReconnect`, `onLog`.
 
 ### Errors
 
@@ -155,6 +156,39 @@ pass the device type and the method picks the spelling:
 const result = await client.verify(serial, "spectro 3", capScan, whiteTileScan, blueTileScan);
 // result.white, result.white_tile, result.blue_tile → { de, is_within_tolerance, scan }
 ```
+
+### Scan modes and reference
+
+`scan()` takes an optional fourth argument. The keys are the wire names:
+
+```js
+await client.scan(serial, undefined, undefined, { measurement_mode: "m2" }); // 45/0°: m0–m3
+await client.scan(serial, undefined, undefined, { specular_mode: "excluded" }); // d/8°: SCI/SCE
+await client.scan(serial, undefined, undefined, { reference_id: "batch-7" });
+```
+
+`measurement_mode` and `specular_mode` are mutually exclusive. The type allows
+only one of them, and a call that sends both throws `TypeError` before
+anything is sent. A device that does not support the requested mode scans in
+one it does. The server reads `reference_id`, not the `reference` key shown in
+the protocol docs. When a mode is set, the server ignores `reference_id`.
+
+### Reconnecting
+
+By default a dropped socket stays closed and `onClose` fires. Pass `reconnect`
+to have the client reopen it:
+
+```js
+const client = new DongleClient({
+  reconnect: { initialDelayMs: 500, maxDelayMs: 10_000 }, // or `true` for these defaults
+  onReconnect: () => console.log("socket back"),
+});
+```
+
+Retries back off exponentially and continue until one succeeds or you call
+`close()`. If you call `close()`, `shutdownServer()` or `requestShutdown()`,
+the client does not reconnect. Commands that were in flight when the socket
+dropped still reject, so retry them yourself.
 
 ### The five-second scan window
 

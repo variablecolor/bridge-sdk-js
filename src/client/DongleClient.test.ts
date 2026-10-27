@@ -133,3 +133,92 @@ test("unsolicited frames reach the callbacks, not a pending promise", async () =
   client.close();
   await server.close();
 });
+
+test("reconnect reopens the socket after an unexpected drop", async () => {
+  const server = await startMockServer((command) =>
+    command.command === "GetDongle"
+      ? [{ event: "GetDongle", payload: { status: "connected" } }]
+      : [],
+  );
+  let reconnected!: () => void;
+  const didReconnect = new Promise<void>((resolve) => {
+    reconnected = resolve;
+  });
+  const client = new DongleClient({
+    port: server.port,
+    reconnect: { initialDelayMs: 10 },
+    onReconnect: () => reconnected(),
+  });
+  await client.connect();
+
+  await server.dropClient();
+  await didReconnect;
+
+  assert.equal(client.isConnected(), true);
+  assert.equal((await client.getDongle()).status, "connected");
+  client.close();
+  await server.close();
+});
+
+test("reconnect does not fire after close()", async () => {
+  const server = await startMockServer();
+  let reconnects = 0;
+  const client = new DongleClient({
+    port: server.port,
+    reconnect: { initialDelayMs: 10 },
+    onReconnect: () => reconnects++,
+  });
+  await client.connect();
+
+  client.close();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assert.equal(reconnects, 0);
+  assert.equal(client.isConnected(), false);
+  await server.close();
+});
+
+test("reconnect is off by default", async () => {
+  const server = await startMockServer();
+  const client = new DongleClient({ port: server.port });
+  await client.connect();
+
+  await server.dropClient();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assert.equal(client.isConnected(), false);
+  await server.close();
+});
+
+test("reconnect keeps retrying while the server is down", async () => {
+  const server = await startMockServer();
+  const port = server.port;
+  const logs: string[] = [];
+  let reconnected!: () => void;
+  const didReconnect = new Promise<void>((resolve) => {
+    reconnected = resolve;
+  });
+  const client = new DongleClient({
+    port,
+    reconnect: { initialDelayMs: 10, maxDelayMs: 20 },
+    onReconnect: () => reconnected(),
+    onLog: (line) => logs.push(line),
+  });
+  await client.connect();
+
+  await server.close();
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.ok(
+    logs.some((line) => line.startsWith("reconnect failed")),
+    "at least one retry failed while nothing was listening",
+  );
+
+  const net = await import("node:net");
+  const revived = net.createServer();
+  await new Promise<void>((resolve) => revived.listen(port, "127.0.0.1", resolve));
+  await didReconnect;
+
+  assert.equal(client.isConnected(), true);
+  client.close();
+  await new Promise<void>((resolve) => revived.close(() => resolve()));
+});

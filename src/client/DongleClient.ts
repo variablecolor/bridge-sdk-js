@@ -18,6 +18,7 @@ import type {
   LabOptions,
   LicenseInstalled,
   LicensePayload,
+  ScanOptions,
   VerifyResult,
 } from "../protocol/types.ts";
 
@@ -96,6 +97,25 @@ export interface DongleClientOptions {
   onDeviceDisconnected?: (serial: string) => void;
   onDiscoveredPeripheral?: (device: DiscoveredPeripheral) => void;
   onClose?: () => void;
+  /**
+   * Reopen the socket after it drops unexpectedly. Off by default.
+   *
+   * Retries back off exponentially from `initialDelayMs` to `maxDelayMs` and
+   * keep going until a retry succeeds or `close()` is called. A close you
+   * asked for (`close()`, `shutdownServer()`, `requestShutdown()`) never
+   * reconnects. Commands that were in flight when the socket dropped still
+   * reject - the server cannot answer them on the new socket.
+   */
+  reconnect?: boolean | ReconnectOptions;
+  /** Called each time a reconnect succeeds. */
+  onReconnect?: () => void;
+}
+
+export interface ReconnectOptions {
+  /** Default 500. */
+  initialDelayMs?: number;
+  /** Default 10000. */
+  maxDelayMs?: number;
 }
 
 interface Pending {
@@ -129,6 +149,11 @@ export class DongleClient {
 
   protected lastScanAt = 0;
 
+  /** True between connect() and an intentional close; gates reconnects. */
+  private wantConnected = false;
+
+  private reconnectTimer: NodeJS.Timeout | null = null;
+
   constructor(options: DongleClientOptions = {}) {
     this.options = options;
   }
@@ -155,6 +180,12 @@ export class DongleClient {
   }
 
   async connect(): Promise<void> {
+    this.wantConnected = true;
+    this.cancelReconnect();
+    await this.open();
+  }
+
+  private async open(): Promise<void> {
     if (this.isConnected()) return;
 
     await new Promise<void>((resolve, reject) => {
@@ -178,6 +209,8 @@ export class DongleClient {
   }
 
   close(): void {
+    this.wantConnected = false;
+    this.cancelReconnect();
     const socket = this.socket;
     this.socket = null;
     socket?.destroy();
@@ -197,7 +230,43 @@ export class DongleClient {
       this.socket = null;
       this.rejectAll(new Error("DongleClient connection closed"));
       this.options.onClose?.();
+      if (this.wantConnected && this.options.reconnect) {
+        this.scheduleReconnect(0);
+      }
     });
+  }
+
+  private scheduleReconnect(attempt: number): void {
+    const settings =
+      typeof this.options.reconnect === "object" ? this.options.reconnect : {};
+    const delay = Math.min(
+      (settings.initialDelayMs ?? 500) * 2 ** attempt,
+      settings.maxDelayMs ?? 10_000,
+    );
+
+    this.options.onLog?.(`reconnecting in ${delay}ms (attempt ${attempt + 1})`);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.open().then(
+        () => {
+          // close() ran while the connect was pending.
+          if (!this.wantConnected) {
+            this.close();
+            return;
+          }
+          this.options.onReconnect?.();
+        },
+        (error: Error) => {
+          this.options.onLog?.(`reconnect failed: ${error.message}`);
+          if (this.wantConnected) this.scheduleReconnect(attempt + 1);
+        },
+      );
+    }, delay);
+  }
+
+  private cancelReconnect(): void {
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
   }
 
   private rejectAll(error: Error): void {
@@ -371,6 +440,23 @@ export class DongleClient {
   }
 
   /**
+   * Delete every installed license and clear the server's license cache.
+   *
+   * This is a separate method so a call to `deleteLicense` can never remove
+   * all licenses by accident. No device can scan again until its `.kpag` is
+   * reinstalled.
+   */
+  deleteAllLicenses(
+    timeoutMs = this.defaultTimeoutMs,
+  ): Promise<LicensePayload> {
+    return this.request<{ delete_all: true }, LicensePayload>(
+      { command: "DeleteLicense", parameters: { delete_all: true } },
+      "DeleteLicense",
+      timeoutMs,
+    );
+  }
+
+  /**
    * Open a Bluetooth link to a licensed device.
    *
    * `Connect` is only an acknowledgement; the link is live at
@@ -420,13 +506,24 @@ export class DongleClient {
     serial: string,
     timeoutMs = this.defaultTimeoutMs,
     lab: LabOptions = DEFAULT_LAB_OPTIONS,
+    options: ScanOptions = {},
   ): Promise<ColorScan> {
+    // The type already forbids this; plain JS callers get the same check.
+    if (options.measurement_mode && options.specular_mode) {
+      throw new TypeError(
+        "scan(): measurement_mode and specular_mode are mutually exclusive",
+      );
+    }
+
     const cooldown = this.scanCooldownMs();
     if (cooldown > 0) throw new ScanThrottleError(cooldown);
 
     this.lastScanAt = Date.now();
-    return this.request<{ serial: string; lab: LabOptions }, ColorScan>(
-      { command: "Scan", parameters: { serial, lab } },
+    return this.request<
+      ScanOptions & { serial: string; lab: LabOptions },
+      ColorScan
+    >(
+      { command: "Scan", parameters: { ...options, serial, lab } },
       ["Scan", onError("DeviceDisconnected")],
       timeoutMs,
     );
@@ -539,6 +636,7 @@ export class DongleClient {
   /** Ask the server to exit. Fire and forget - it answers by closing. */
   shutdownServer(): void {
     if (!this.socket) return;
+    this.wantConnected = false;
     this.socket.write(encodeCommand({ command: "Shutdown" }));
   }
 
@@ -564,6 +662,7 @@ export class DongleClient {
       );
     }
 
+    this.wantConnected = false;
     return new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         socket.off("close", onClose);

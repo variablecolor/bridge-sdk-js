@@ -314,3 +314,23 @@ test("requestShutdown on a closed client rejects rather than pretending", async 
 
   await assert.rejects(() => client.requestShutdown(100), /not connected/i);
 });
+
+test("deleteAllLicenses sends delete_all and no serial", async () => {
+  const server = await startMockServer((command) =>
+    command.command === "DeleteLicense"
+      ? [{ event: "DeleteLicense", payload: { serial: "", delete_all: true } }]
+      : [],
+  );
+  const client = new DongleClient({ port: server.port });
+  await client.connect();
+
+  const result = await client.deleteAllLicenses();
+
+  assert.deepEqual(server.received[0], {
+    command: "DeleteLicense",
+    parameters: { delete_all: true },
+  });
+  assert.equal(result.delete_all, true);
+  client.close();
+  await server.close();
+});

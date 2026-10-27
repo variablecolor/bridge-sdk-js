@@ -235,3 +235,68 @@ test("verify uses tile parameter names per device type", async () => {
   client.close();
   await server.close();
 });
+
+test("scan sends measurement_mode and reference_id when given", async () => {
+  const server = await startMockServer(() => [
+    { event: "Scan", payload: scanFixture("SP3-0001") },
+  ]);
+  const client = new DongleClient({ port: server.port });
+  await client.connect();
+
+  await client.scan("SP3-0001", undefined, undefined, {
+    measurement_mode: "m2",
+    reference_id: "batch-7",
+  });
+
+  assert.deepEqual(server.received[0], {
+    command: "Scan",
+    parameters: {
+      measurement_mode: "m2",
+      reference_id: "batch-7",
+      serial: "SP3-0001",
+      lab: { illuminant: "D65", observer: "TEN_DEGREE" },
+    },
+  });
+  client.close();
+  await server.close();
+});
+
+test("scan sends specular_mode", async () => {
+  const server = await startMockServer(() => [
+    { event: "Scan", payload: scanFixture("SP3-0001") },
+  ]);
+  const client = new DongleClient({ port: server.port });
+  await client.connect();
+
+  await client.scan("SP3-0001", undefined, undefined, {
+    specular_mode: "excluded",
+  });
+
+  assert.equal(
+    (server.received[0] as { parameters: { specular_mode: string } }).parameters
+      .specular_mode,
+    "excluded",
+  );
+  client.close();
+  await server.close();
+});
+
+test("scan rejects both modes at once without sending or starting the cooldown", async () => {
+  const server = await startMockServer();
+  const client = new DongleClient({ port: server.port });
+  await client.connect();
+
+  await assert.rejects(
+    () =>
+      client.scan("SP3-0001", undefined, undefined, {
+        measurement_mode: "m0",
+        // @ts-expect-error - the type allows only one mode
+        specular_mode: "included",
+      }),
+    TypeError,
+  );
+  assert.equal(server.received.length, 0);
+  assert.equal(client.scanCooldownMs(), 0);
+  client.close();
+  await server.close();
+});

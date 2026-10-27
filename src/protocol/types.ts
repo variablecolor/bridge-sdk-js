@@ -252,6 +252,28 @@ export interface LabOptions {
   observer: string;
 }
 
+export type MeasurementMode = "m0" | "m1" | "m2" | "m3";
+
+export type SpecularMode = "included" | "excluded";
+
+/**
+ * Optional `Scan` parameters, spelled as they go on the wire.
+ *
+ * `measurement_mode` (45/0° optics) and `specular_mode` (d/8° SCI/SCE) are
+ * mutually exclusive, so the type allows one or the other. A device that does
+ * not support the requested mode scans in one it does.
+ *
+ * `reference_id` is the server's field name. The protocol readme shows it as
+ * `reference`, but the server ignores that spelling. When a mode is set, the
+ * server uses the mode's batch and does not use `reference_id`.
+ */
+export type ScanOptions = {
+  reference_id?: string;
+} & (
+  | { measurement_mode?: MeasurementMode; specular_mode?: never }
+  | { specular_mode?: SpecularMode; measurement_mode?: never }
+);
+
 export const DEFAULT_LAB_OPTIONS: LabOptions = {
   illuminant: "D65",
   observer: "TEN_DEGREE",
