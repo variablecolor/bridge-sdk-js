@@ -125,6 +125,106 @@ test("disconnectSpectro resolves on DeviceDisconnected", async () => {
   await server.close();
 });
 
+test("disconnectSpectro resolves on the vi-connection-lost ack it asked for", async () => {
+  // The server tags a requested disconnect (0216, terminated by local host)
+  // with vi-connection-lost, same as a dropped link.
+  const server = await startMockServer((command) =>
+    command.command === "Disconnect"
+      ? [
+          {
+            event: "DeviceDisconnected",
+            payload: { serial: "SP3-0001", disconnect_code: "0216" },
+            error_code: "vi-connection-lost",
+          },
+        ]
+      : [],
+  );
+  const logs: string[] = [];
+  const client = new DongleClient({
+    port: server.port,
+    onLog: (message) => logs.push(message),
+  });
+  await client.connect();
+
+  await client.disconnectSpectro("SP3-0001", 1000);
+
+  assert.ok(logs.includes("disconnected SP3-0001 (disconnect_code 0216)"));
+  client.close();
+  await server.close();
+});
+
+test("disconnectSpectro ignores another device's DeviceDisconnected", async () => {
+  const server = await startMockServer((command) =>
+    command.command === "Disconnect"
+      ? [
+          {
+            event: "DeviceDisconnected",
+            payload: { serial: "SP3-0002", disconnect_code: "0216" },
+            error_code: "vi-connection-lost",
+          },
+          { event: "DeviceDisconnected", payload: { serial: "SP3-0002" } },
+        ]
+      : [],
+  );
+  const client = new DongleClient({ port: server.port });
+  await client.connect();
+
+  await assert.rejects(
+    () => client.disconnectSpectro("SP3-0001", 60),
+    /Disconnect timed out after 60ms/,
+  );
+
+  client.close();
+  await server.close();
+});
+
+test("disconnectSpectro still rejects vi-connection-lost under Disconnect", async () => {
+  // The ack exception is scoped to DeviceDisconnected; an errored Disconnect
+  // reply is the server's real failure answer.
+  const server = await startMockServer(() => [
+    {
+      event: "Disconnect",
+      payload: { serial: "SP3-0001" },
+      error_code: "vi-connection-lost",
+    },
+  ]);
+  const client = new DongleClient({ port: server.port });
+  await client.connect();
+
+  await assert.rejects(
+    () => client.disconnectSpectro("SP3-0001", 5000),
+    (error: unknown) =>
+      error instanceof DongleCommandError && error.code === "vi-connection-lost",
+  );
+
+  client.close();
+  await server.close();
+});
+
+test("an unsolicited vi-connection-lost still reports the disconnect", async () => {
+  // Answering GetDongle gives the test a frame that lands after the push.
+  const server = await startMockServer(() => [
+    { event: "GetDongle", payload: {} },
+  ]);
+  const disconnected: string[] = [];
+  const client = new DongleClient({
+    port: server.port,
+    onDeviceDisconnected: (serial) => disconnected.push(serial),
+  });
+  await client.connect();
+
+  server.send({
+    event: "DeviceDisconnected",
+    payload: { serial: "SP3-0001", disconnect_code: "0208" },
+    error_code: "vi-connection-lost",
+  });
+  await client.getDongle(1000);
+
+  assert.deepEqual(disconnected, ["SP3-0001"]);
+  client.close();
+  await server.close();
+});
+
 test("an error payload's message reaches the caller", async () => {
   // WithError on a CategorizedError puts {error_code, message, error_type,
   // file} in the payload and the code in error_code. Reading only the code
@@ -269,6 +369,28 @@ test("a link lost mid-scan fails the scan instead of waiting out the timeout", a
     (error: unknown) =>
       error instanceof DongleCommandError && error.code === "vi-connection-lost",
   );
+
+  client.close();
+  await server.close();
+});
+
+test("another device dropping does not fail a scan", async () => {
+  const server = await startMockServer((command) =>
+    command.command === "Scan"
+      ? [
+          {
+            event: "DeviceDisconnected",
+            payload: { serial: "SP3-0002" },
+            error_code: "vi-connection-lost",
+          },
+          { event: "Scan", payload: { serial: "SP3-0001" } },
+        ]
+      : [],
+  );
+  const client = new DongleClient({ port: server.port });
+  await client.connect();
+
+  await client.scan("SP3-0001", 1000);
 
   client.close();
   await server.close();

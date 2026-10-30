@@ -60,18 +60,36 @@ export class DongleCommandError extends Error {
  * on the ack; awaiting it error-only turns it into a fast failure path without
  * stealing the success case.
  */
-export interface ErrorOnlyEvent {
-  event: EventName;
+export interface ErrorOnlyEvent extends AwaitEvent {
   errorOnly: true;
 }
 
+/**
+ * An awaited event with conditions on which frames settle it.
+ *
+ * `serial` matters for device events: `DeviceDisconnected` from one Spectro
+ * must not settle a command aimed at another. `ackCodes` covers the server
+ * tagging an expected outcome with an error - a requested disconnect arrives
+ * as `vi-connection-lost` just like a dropped link.
+ */
+export interface AwaitEvent {
+  event: EventName;
+  /** Settle only on a frame carrying an error code. */
+  errorOnly?: boolean;
+  /** Ignore frames whose `payload.serial` names a different device. */
+  serial?: string;
+  /** Error codes that resolve instead of reject. */
+  ackCodes?: DongleErrorCode[];
+}
+
 /** Await `event` only if it arrives carrying an error code. */
-export const onError = (event: EventName): ErrorOnlyEvent => ({
+export const onError = (event: EventName, serial?: string): ErrorOnlyEvent => ({
   event,
   errorOnly: true,
+  serial,
 });
 
-export type AwaitSpec = EventName | ErrorOnlyEvent;
+export type AwaitSpec = EventName | AwaitEvent;
 
 /** A scan asked for before the device's 5-second recovery window elapsed. */
 export class ScanThrottleError extends Error {
@@ -123,8 +141,8 @@ interface Pending {
   resolve: (payload: unknown) => void;
   reject: (error: Error) => void;
   timer: NodeJS.Timeout;
-  /** Of this entry's keys, the ones that only settle on an error. */
-  errorOnly: Set<EventName>;
+  /** This entry's keys that carry settle conditions. */
+  specs: Map<EventName, AwaitEvent>;
 }
 
 export const DEFAULT_PORT = 9100;
@@ -308,13 +326,21 @@ export class DongleClient {
 
     const entry = this.pending.get(event);
     if (!entry) return;
+    const spec = entry.specs.get(event);
+
+    if (
+      spec?.serial !== undefined &&
+      (frame.payload as { serial?: string } | null)?.serial !== spec.serial
+    ) {
+      return;
+    }
 
     // An error-only key ignores the success case: a bare Connect ack means
     // the attempt started, not that the device is on the air.
-    if (!errorCode && entry.errorOnly.has(event)) return;
+    if (!errorCode && spec?.errorOnly) return;
 
     // entry.resolve/reject clear the timer and every key this entry holds.
-    if (errorCode) {
+    if (errorCode && !spec?.ackCodes?.includes(errorCode)) {
       const detail = (frame.payload as { message?: string } | null)?.message;
       entry.reject(
         new DongleCommandError(errorCode, entry.command, detail),
@@ -342,10 +368,10 @@ export class DongleClient {
     const events = specs.map((spec) =>
       typeof spec === "string" ? spec : spec.event,
     );
-    const errorOnly = new Set(
+    const conditions = new Map(
       specs
-        .filter((spec): spec is ErrorOnlyEvent => typeof spec !== "string")
-        .map((spec) => spec.event),
+        .filter((spec): spec is AwaitEvent => typeof spec !== "string")
+        .map((spec) => [spec.event, spec]),
     );
 
     if (!this.isConnected() || !this.socket) {
@@ -372,7 +398,7 @@ export class DongleClient {
 
       const entry: Pending = {
         command: command.command,
-        errorOnly,
+        specs: conditions,
         resolve: (payload) => {
           clear();
           (resolve as (value: unknown) => void)(payload);
@@ -477,7 +503,7 @@ export class DongleClient {
         // DeviceDisconnected. Without both, either one waits out the timeout
         // and loses the code that says why.
         onError("Connect"),
-        onError("DeviceDisconnected"),
+        onError("DeviceDisconnected", serial),
       ],
       timeoutMs,
     );
@@ -490,15 +516,33 @@ export class DongleClient {
    * `DeviceDisconnected` is the ack. It *does* answer on failure, under event
    * `Disconnect` with an error code, so both names are awaited; otherwise a
    * real failure would sit until the timeout.
+   *
+   * The server tags every BLE disconnect except `0202` with
+   * `vi-connection-lost`, including the `0216` a requested disconnect
+   * produces. While this request is in flight that code on this serial's
+   * `DeviceDisconnected` is the ack, not a failure.
    */
   async disconnectSpectro(
     serial: string,
     timeoutMs = this.defaultTimeoutMs,
   ): Promise<void> {
-    await this.request<{ serial: string }, { serial: string }>(
+    const payload = await this.request<
+      { serial: string },
+      { serial: string; disconnect_code?: string }
+    >(
       { command: "Disconnect", parameters: { serial } },
-      ["DeviceDisconnected", "Disconnect"],
+      [
+        {
+          event: "DeviceDisconnected",
+          serial,
+          ackCodes: ["vi-connection-lost"],
+        },
+        "Disconnect",
+      ],
       timeoutMs,
+    );
+    this.options.onLog?.(
+      `disconnected ${serial} (disconnect_code ${payload?.disconnect_code ?? "none"})`,
     );
   }
 
@@ -524,7 +568,7 @@ export class DongleClient {
       ColorScan
     >(
       { command: "Scan", parameters: { ...options, serial, lab } },
-      ["Scan", onError("DeviceDisconnected")],
+      ["Scan", onError("DeviceDisconnected", serial)],
       timeoutMs,
     );
   }
@@ -540,7 +584,7 @@ export class DongleClient {
     this.lastScanAt = Date.now();
     return this.request<{ serial: string; lab: LabOptions }, ColorScan[]>(
       { command: "MultiModeScan", parameters: { serial, lab } },
-      ["MultiModeScan", onError("DeviceDisconnected")],
+      ["MultiModeScan", onError("DeviceDisconnected", serial)],
       timeoutMs,
     );
   }
@@ -571,7 +615,7 @@ export class DongleClient {
         command: "SetCalibration",
         parameters: { serial, calibration_scans: scans },
       },
-      ["SetCalibration", onError("DeviceDisconnected")],
+      ["SetCalibration", onError("DeviceDisconnected", serial)],
       timeoutMs,
     );
   }
@@ -603,7 +647,7 @@ export class DongleClient {
 
     return this.request<typeof parameters, VerifyResult>(
       { command: "Verify", parameters },
-      ["Verify", onError("DeviceDisconnected")],
+      ["Verify", onError("DeviceDisconnected", serial)],
       timeoutMs,
     );
   }

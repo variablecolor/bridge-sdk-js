@@ -78,7 +78,7 @@ arrives, and takes an optional per-call timeout in milliseconds.
 | `deleteLicense(serial)` | `DeleteLicense` | `DeleteLicense` |
 | `deleteAllLicenses()` | `DeleteLicense` with `delete_all` | `DeleteLicense` — every license is removed |
 | `connectSpectro(serial)` | `Connect` | `DeviceConnected` — not the `Connect` ack |
-| `disconnectSpectro(serial)` | `Disconnect` | `DeviceDisconnected`, or rejects on an errored `Disconnect` |
+| `disconnectSpectro(serial)` | `Disconnect` | `DeviceDisconnected` for that serial, including the `vi-connection-lost` the server tags a requested disconnect with; rejects on an errored `Disconnect` |
 | `scan(serial, timeout?, lab?, options?)` | `Scan` | `Scan` — one reading |
 | `multiModeScan(serial)` | `MultiModeScan` | `MultiModeScan` — one reading per measurement mode |
 | `setCalibration(serial, scans)` | `SetCalibration` | `calibration_result: "success"` |
