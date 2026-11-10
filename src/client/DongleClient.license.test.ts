@@ -362,6 +362,34 @@ test("a Connect that times out on the air fails fast too", async () => {
   await server.close();
 });
 
+test("a pending command for an unlicensed Spectro rejects with the new code", async () => {
+  // The server never answers Scan here; the unlicensed DeviceDisconnected for
+  // the same serial is what settles it, instead of the timeout.
+  const server = await startMockServer((command) =>
+    command.command === "Scan"
+      ? [
+          {
+            event: "DeviceDisconnected",
+            payload: { serial: "SP3-0001" },
+            error_code: "vi-unlicensed-device-disconnected",
+          },
+        ]
+      : [],
+  );
+  const client = new DongleClient({ port: server.port });
+  await client.connect();
+
+  await assert.rejects(
+    () => client.scan("SP3-0001", 5000),
+    (error: unknown) =>
+      error instanceof DongleCommandError &&
+      error.code === "vi-unlicensed-device-disconnected",
+  );
+
+  client.close();
+  await server.close();
+});
+
 test("an errorless Connect ack does not settle connectSpectro", async () => {
   // The ack means "attempt started", not "connected". Settling on it would
   // report a connected device that is not connected.

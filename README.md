@@ -95,6 +95,12 @@ Unsolicited events are callbacks on the constructor options, not promises:
 one. `vi-connection-lost` is a dropped link. `vi-unlicensed-device-disconnected`
 (server 0.8.1+) means the server found the device still linked at startup with
 no license installed and disconnected it: install the license, then connect.
+Any `connectSpectro`, `scan`, `multiModeScan`, `setCalibration`, `verify` or
+`disconnectSpectro` still waiting on that serial rejects with a
+`DongleCommandError` whose `code` is `vi-unlicensed-device-disconnected`. The
+server normally refuses those commands for an unlicensed serial up front
+(`vi-missing-license`, `vi-bluetooth-device-not-connected`), so this only
+catches one already in flight when the event arrives.
 
 ### Errors
 
