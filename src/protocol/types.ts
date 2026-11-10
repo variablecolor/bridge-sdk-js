@@ -50,6 +50,7 @@ export type DongleErrorCode =
   | "vi-connection-lost"
   | "vi-characteristic-missing"
   | "vi-service-discovery-failed"
+  | "vi-unlicensed-device-disconnected"
   | (string & {});
 
 export interface Command<T> {

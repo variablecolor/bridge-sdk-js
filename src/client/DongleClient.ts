@@ -112,7 +112,12 @@ export interface DongleClientOptions {
   onButtonPress?: (serial: string) => void;
   onDongleStatus?: (status: DongleStatus) => void;
   onDeviceConnected?: (device: APISpectroJSON) => void;
-  onDeviceDisconnected?: (serial: string) => void;
+  /**
+   * `errorCode` says why, when the server gives a reason: `vi-connection-lost`
+   * for a dropped link, or `vi-unlicensed-device-disconnected` when the server
+   * (0.8.1+) dropped a device it found linked at startup with no license.
+   */
+  onDeviceDisconnected?: (serial: string, errorCode?: DongleErrorCode) => void;
   onDiscoveredPeripheral?: (device: DiscoveredPeripheral) => void;
   onClose?: () => void;
   /**
@@ -318,6 +323,7 @@ export class DongleClient {
     if (event === "DeviceDisconnected") {
       this.options.onDeviceDisconnected?.(
         (frame.payload as { serial: string }).serial,
+        errorCode,
       );
     }
     if (event === "GetDongle") {

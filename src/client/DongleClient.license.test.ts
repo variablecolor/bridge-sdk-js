@@ -225,6 +225,37 @@ test("an unsolicited vi-connection-lost still reports the disconnect", async () 
   await server.close();
 });
 
+test("onDeviceDisconnected receives the error code, e.g. an unlicensed device", async () => {
+  // Server 0.8.1+ disconnects a device still linked at startup whose license
+  // is missing. The code is the only thing that tells the app to ask for the
+  // license instead of treating it as a dropped link.
+  const server = await startMockServer(() => [
+    { event: "GetDongle", payload: {} },
+  ]);
+  const disconnected: [string, string | undefined][] = [];
+  const client = new DongleClient({
+    port: server.port,
+    onDeviceDisconnected: (serial, errorCode) =>
+      disconnected.push([serial, errorCode]),
+  });
+  await client.connect();
+
+  server.send({
+    event: "DeviceDisconnected",
+    payload: { serial: "SP3-0001" },
+    error_code: "vi-unlicensed-device-disconnected",
+  });
+  server.send({ event: "DeviceDisconnected", payload: { serial: "SP3-0002" } });
+  await client.getDongle(1000);
+
+  assert.deepEqual(disconnected, [
+    ["SP3-0001", "vi-unlicensed-device-disconnected"],
+    ["SP3-0002", undefined],
+  ]);
+  client.close();
+  await server.close();
+});
+
 test("an error payload's message reaches the caller", async () => {
   // WithError on a CategorizedError puts {error_code, message, error_type,
   // file} in the payload and the code in error_code. Reading only the code

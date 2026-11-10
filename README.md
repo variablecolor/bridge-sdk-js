@@ -20,7 +20,7 @@ needs the path to it.
 ## Install
 
 ```bash
-npm install github:variablecolor/bridge-sdk-js#v0.4.0
+npm install github:variablecolor/bridge-sdk-js#v0.5.0
 ```
 
 Node 20 or newer. Both ESM and CommonJS builds are published.
@@ -90,6 +90,11 @@ arrives, and takes an optional per-call timeout in milliseconds.
 Unsolicited events are callbacks on the constructor options, not promises:
 `onButtonPress`, `onDongleStatus`, `onDeviceConnected`, `onDeviceDisconnected`,
 `onDiscoveredPeripheral`, `onError`, `onClose`, `onReconnect`, `onLog`.
+
+`onDeviceDisconnected(serial, errorCode)` gets the server's reason when there is
+one. `vi-connection-lost` is a dropped link. `vi-unlicensed-device-disconnected`
+(server 0.8.1+) means the server found the device still linked at startup with
+no license installed and disconnected it: install the license, then connect.
 
 ### Errors
 
